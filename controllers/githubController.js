@@ -76,13 +76,16 @@ export const getUserRepos = async (req, res) => {
 };
 
 // Search repos & save
+
 export const searchRepos = async (req, res) => {
   try {
     const { q } = req.query;
-    
+
     if (!q || q.trim() === "") {
       return res.status(400).json({ error: "Search query is required" });
     }
+
+    console.log("Received search query:", q);
 
     const { data } = await octokit.rest.search.repos({
       q: q.trim(),
@@ -91,24 +94,38 @@ export const searchRepos = async (req, res) => {
       per_page: 5,
     });
 
-    // Save repos with better error handling
-    if (data.items && data.items.length > 0) {
+    console.log("GitHub API returned total_count:", data.total_count);
+    console.log("Number of items returned:", data.items.length);
+
+    const savedRepos = [];
+
+    for (const repo of data.items) {
+      const repoData = {
+        name: repo.name,
+        full_name: repo.full_name,
+        html_url: repo.html_url,
+        description: repo.description,
+        language: repo.language,
+        stargazers_count: repo.stargazers_count,
+        forks_count: repo.forks_count,
+      };
+
       try {
-        // Filter out repos that might cause duplicate key errors
-        const reposToSave = data.items.map(repo => ({
-          ...repo,
-          // Ensure we have a unique identifier
-          _id: repo.id,
-        }));
-        
-        await Repo.insertMany(reposToSave, { ordered: false });
+        // Correct usage: first argument is filter, second is update object
+        const result = await Repo.updateOne(
+          { full_name: repo.full_name }, // filter by unique repo full name
+          { $set: repoData },            // update data
+          { upsert: true }               // insert if not exists
+        );
+        savedRepos.push(repo.full_name);
+        console.log(`Repo saved/updated: ${repo.full_name}`, result);
       } catch (dbErr) {
-        // Log DB errors but don't fail the request
-        console.warn("Database insertion failed:", dbErr.message);
+        console.error(`Database insertion failed for repo: ${repo.full_name}`, dbErr.message);
       }
     }
 
-    // Return the search results with metadata
+    console.log("All saved/updated repos:", savedRepos);
+
     res.status(200).json({
       total_count: data.total_count,
       incomplete_results: data.incomplete_results,
@@ -116,14 +133,14 @@ export const searchRepos = async (req, res) => {
     });
   } catch (err) {
     console.error("Error in searchRepos:", err);
-    
+
     if (err.status === 403) {
       return res.status(403).json({ error: "Rate limit exceeded or access denied" });
     }
     if (err.status === 422) {
       return res.status(422).json({ error: "Invalid search query" });
     }
-    
+
     res.status(500).json({ error: "Internal server error" });
   }
 };
